@@ -22,27 +22,6 @@ import io.smallrye.mutiny.tuples.Tuple2;
 import io.vertx.core.Vertx;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import org.apache.camel.karavan.model.*;
-import org.eclipse.jgit.api.*;
-import org.eclipse.jgit.api.errors.GitAPIException;
-import org.eclipse.jgit.api.errors.InvalidRemoteException;
-import org.eclipse.jgit.api.errors.RefNotFoundException;
-import org.eclipse.jgit.api.errors.TransportException;
-import org.eclipse.jgit.diff.DiffEntry;
-import org.eclipse.jgit.diff.DiffFormatter;
-import org.eclipse.jgit.lib.*;
-import org.eclipse.jgit.revwalk.RevCommit;
-import org.eclipse.jgit.revwalk.RevTree;
-import org.eclipse.jgit.revwalk.RevWalk;
-import org.eclipse.jgit.transport.*;
-import org.eclipse.jgit.transport.ssh.jsch.JschConfigSessionFactory;
-import org.eclipse.jgit.treewalk.AbstractTreeIterator;
-import org.eclipse.jgit.treewalk.CanonicalTreeParser;
-import org.eclipse.jgit.treewalk.TreeWalk;
-import org.eclipse.jgit.treewalk.filter.TreeFilter;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
-import org.jboss.logging.Logger;
-
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
@@ -51,9 +30,63 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
 import java.util.regex.Pattern;
 import java.util.stream.StreamSupport;
+import org.apache.camel.karavan.model.GitConfig;
+import org.apache.camel.karavan.model.GitRepo;
+import org.apache.camel.karavan.model.GitRepoFile;
+import org.apache.camel.karavan.model.Project;
+import org.apache.camel.karavan.model.ProjectCommit;
+import org.apache.camel.karavan.model.ProjectFile;
+import org.apache.camel.karavan.model.ProjectFileCommitDiff;
+import org.eclipse.jgit.api.AddCommand;
+import org.eclipse.jgit.api.CheckoutCommand;
+import org.eclipse.jgit.api.CloneCommand;
+import org.eclipse.jgit.api.FetchCommand;
+import org.eclipse.jgit.api.Git;
+import org.eclipse.jgit.api.PullCommand;
+import org.eclipse.jgit.api.PullResult;
+import org.eclipse.jgit.api.PushCommand;
+import org.eclipse.jgit.api.RemoteAddCommand;
+import org.eclipse.jgit.api.TransportCommand;
+import org.eclipse.jgit.api.errors.GitAPIException;
+import org.eclipse.jgit.api.errors.InvalidRemoteException;
+import org.eclipse.jgit.api.errors.RefNotFoundException;
+import org.eclipse.jgit.api.errors.TransportException;
+import org.eclipse.jgit.diff.DiffEntry;
+import org.eclipse.jgit.diff.DiffFormatter;
+import org.eclipse.jgit.lib.ObjectId;
+import org.eclipse.jgit.lib.ObjectLoader;
+import org.eclipse.jgit.lib.ObjectReader;
+import org.eclipse.jgit.lib.PersonIdent;
+import org.eclipse.jgit.lib.Repository;
+import org.eclipse.jgit.revwalk.RevCommit;
+import org.eclipse.jgit.revwalk.RevTree;
+import org.eclipse.jgit.revwalk.RevWalk;
+import org.eclipse.jgit.transport.FetchResult;
+import org.eclipse.jgit.transport.PushResult;
+import org.eclipse.jgit.transport.SshSessionFactory;
+import org.eclipse.jgit.transport.SshTransport;
+import org.eclipse.jgit.transport.URIish;
+import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
+import org.eclipse.jgit.transport.ssh.jsch.JschConfigSessionFactory;
+import org.eclipse.jgit.treewalk.AbstractTreeIterator;
+import org.eclipse.jgit.treewalk.CanonicalTreeParser;
+import org.eclipse.jgit.treewalk.TreeWalk;
+import org.eclipse.jgit.treewalk.filter.TreeFilter;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class GitService {
@@ -78,6 +111,9 @@ public class GitService {
 
     @ConfigProperty(name = "karavan.git.ephemeral", defaultValue = "false")
     boolean ephemeral;
+
+    @ConfigProperty(name = "karavan.git.projects.path")
+    String projectsPath;
 
     @Inject
     Vertx vertx;
@@ -164,10 +200,10 @@ public class GitService {
                 for (Map.Entry<String, String> entry : filesRead.entrySet()) {
                     String name = entry.getKey();
                     String body = entry.getValue();
-                    Tuple2<String, Integer> fileCommit = lastCommit(git, project + File.separator + name);
+                    Tuple2<String, Integer> fileCommit = lastCommit(git, projectsPath + File.separator + project + File.separator + name);
                     files.add(new GitRepoFile(name, fileCommit.getItem2().longValue() * 1000, body));
                 }
-                Tuple2<String, Integer> commit = lastCommit(git, project);
+                Tuple2<String, Integer> commit = lastCommit(git, projectsPath + File.separator + project);
                 GitRepo repo = new GitRepo(project, commit.getItem1(), commit.getItem2().longValue() * 1000, files);
                 result.add(repo);
             }
@@ -210,9 +246,10 @@ public class GitService {
     }
 
     private List<String> readProjectsFromFolder(String folder, String... filter) {
-        LOGGER.info("Read projects from " + folder);
+        String projectsFolder = folder + File.separator + projectsPath;
+        LOGGER.info("Read projects from " + projectsFolder);
         List<String> files = new ArrayList<>();
-        vertx.fileSystem().readDirBlocking(folder).forEach(path -> {
+        vertx.fileSystem().readDirBlocking(projectsFolder).forEach(path -> {
             String[] filenames = path.split(Pattern.quote(File.separator));
             String folderName = filenames[filenames.length - 1];
             if (folderName.startsWith(".")) {
@@ -228,9 +265,9 @@ public class GitService {
     }
 
     private Map<String, String> readProjectFilesFromFolder(String repoFolder, String projectFolder) {
-        LOGGER.infof("Read files from %s/%s", repoFolder, projectFolder);
+        LOGGER.infof("Read files from %s/%s/%s", repoFolder, projectsPath, projectFolder);
         Map<String, String> files = new HashMap<>();
-        vertx.fileSystem().readDirBlocking(repoFolder + File.separator + projectFolder).forEach(f -> {
+        vertx.fileSystem().readDirBlocking(repoFolder + File.separator + projectsPath + File.separator + projectFolder).forEach(f -> {
             String[] filenames = f.split(Pattern.quote(File.separator));
             String filename = filenames[filenames.length - 1];
             Path path = Paths.get(f);
@@ -247,12 +284,12 @@ public class GitService {
     }
 
     private void writeProjectToFolder(String folder, Project project, List<ProjectFile> files) throws IOException {
-        Files.createDirectories(Paths.get(folder, project.getProjectId()));
+        Files.createDirectories(Paths.get(folder, projectsPath, project.getProjectId()));
         LOGGER.info("Write files for project " + project.getProjectId());
         files.forEach(file -> {
             try {
                 LOGGER.info("Add file " + file.getName());
-                Files.writeString(Paths.get(folder, project.getProjectId(), file.getName()), file.getCode());
+                Files.writeString(Paths.get(folder, projectsPath, project.getProjectId(), file.getName()), file.getCode());
             } catch (IOException e) {
                 LOGGER.error("Error during file write", e);
             }
@@ -260,7 +297,7 @@ public class GitService {
     }
 
     private void addDeletedFilesToIndex(Git git, String folder, Project project, List<ProjectFile> files) throws IOException {
-        Path path = Paths.get(folder, project.getProjectId());
+        Path path = Paths.get(folder, projectsPath, project.getProjectId());
         LOGGER.info("Add deleted files to git index for project " + project.getProjectId());
         vertx.fileSystem().readDirBlocking(path.toString()).forEach(f -> {
             String[] filenames = f.split(Pattern.quote(File.separator));
@@ -269,7 +306,7 @@ public class GitService {
             if (files.stream().filter(pf -> Objects.equals(pf.getName(), filename)).count() == 0) {
                 try {
                     LOGGER.info("Add deleted file " + filename);
-                    git.rm().addFilepattern(project.getProjectId() + File.separator + filename).call();
+                    git.rm().addFilepattern(projectsPath + File.separator + project.getProjectId() + File.separator + filename).call();
                 } catch (GitAPIException e) {
                     throw new RuntimeException(e);
                 }
@@ -281,7 +318,7 @@ public class GitService {
         LOGGER.info("Commit and push changes to the branch " + branch);
         AddCommand add = git.add();
         for (String fileName : fileNames) {
-            add = add.addFilepattern(projectId + File.separator + fileName);
+            add = add.addFilepattern(projectsPath + File.separator + projectId + File.separator + fileName);
         }
         LOGGER.info("Git add: " + add.call());
         RevCommit commit = git.commit().setMessage(message).setAuthor(new PersonIdent(authorName, authorEmail)).call();
@@ -304,9 +341,9 @@ public class GitService {
     }
 
     private void addDeletedFolderToIndex(Git git, String projectId) {
-        LOGGER.infof("Add folder %s to git index.", projectId);
+        LOGGER.infof("Add folder %s to git index.", projectsPath + File.separator + projectId);
         try {
-            git.rm().addFilepattern(projectId + File.separator).call();
+            git.rm().addFilepattern(projectsPath + File.separator + projectId + File.separator).call();
         } catch (GitAPIException e) {
             throw new RuntimeException(e);
         }
