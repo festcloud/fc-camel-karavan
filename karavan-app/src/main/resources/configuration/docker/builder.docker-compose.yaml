@@ -7,6 +7,7 @@ services:
       - GIT_USERNAME=${karavan.git.username}
       - GIT_PASSWORD=${karavan.git.password}
       - GIT_BRANCH=${karavan.git.branch}
+      - KARAVAN_GIT_PROJECTS_PATH=${karavan.git.projects.path}
       - IMAGE_REGISTRY=${karavan.container-image.registry}
       - IMAGE_GROUP=${karavan.container-image.group}
       - IMAGE_REGISTRY_PASSWORD=${karavan.container-image.registry-password}

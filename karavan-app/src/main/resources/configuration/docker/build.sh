@@ -9,6 +9,8 @@ git_credential_fill() {
 git_credential_fill | git credential approve
 git clone --depth 1 --branch $GIT_BRANCH $GIT_REPOSITORY $CODE_DIR
 
+rm -rf $CODE_DIR/$PROJECT_ID
+mv $CODE_DIR/$KARAVAN_GIT_PROJECTS_PATH/$PROJECT_ID $CODE_DIR/$PROJECT_ID
 cd $CODE_DIR/$PROJECT_ID
 
 jbang -Dcamel.jbang.version=$CAMEL_VERSION camel@apache/camel export --local-kamelet-dir=$KAMELETS_DIR
